@@ -20,6 +20,12 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
+try:
+    import prince  # MCA per dati categorici
+    HAS_PRINCE = True
+except ImportError:
+    HAS_PRINCE = False
+
 # ---------------------------------------------------------------- CONFIG ---
 
 st.set_page_config(page_title="Summer of AI — Analytics", page_icon="☀️", layout="wide")
@@ -267,20 +273,50 @@ def build_features(df: pd.DataFrame):
     return X, labels
 
 
+def _mca_variance(mca) -> np.ndarray:
+    """Estrae la varianza spiegata gestendo le diverse versioni dell'API di prince."""
+    if hasattr(mca, "percentage_of_variance_"):
+        return np.asarray(mca.percentage_of_variance_) / 100.0
+    if hasattr(mca, "explained_inertia_"):
+        return np.asarray(mca.explained_inertia_)
+    if hasattr(mca, "eigenvalues_"):
+        ev = np.asarray(mca.eigenvalues_)
+        return ev / ev.sum()
+    return np.array([np.nan])
+
+
 @st.cache_data
-def run_clustering(X: pd.DataFrame, k: int, seed: int = 42):
+def compute_embedding(X: pd.DataFrame, method: str, n_comp: int, seed: int = 42):
+    """Ritorna (embedding, varianza spiegata per componente).
+    method: 'PCA' oppure 'MCA' (richiede prince; altrimenti fallback a PCA)."""
+    n_comp = min(n_comp, X.shape[1])
+    if method == "MCA" and HAS_PRINCE:
+        # MCA lavora su categorie: converto ogni colonna in stringa
+        # (le binarie 0/1 diventano categorie "0"/"1", le ordinali restano ordinabili)
+        X_cat = X.astype(str)
+        mca = prince.MCA(n_components=n_comp, random_state=seed)
+        mca = mca.fit(X_cat)
+        emb = mca.row_coordinates(X_cat).to_numpy()
+        evr = _mca_variance(mca)[:n_comp]
+        return emb, evr
+    # PCA su one-hot standardizzato
     Z = StandardScaler().fit_transform(X)
-    pca = PCA(n_components=min(6, X.shape[1]), random_state=seed)
+    pca = PCA(n_components=n_comp, random_state=seed)
     emb = pca.fit_transform(Z)
+    return emb, pca.explained_variance_ratio_
+
+
+@st.cache_data
+def run_clustering(X: pd.DataFrame, k: int, method: str, n_comp: int, seed: int = 42):
+    emb, evr = compute_embedding(X, method, n_comp, seed)
     km = KMeans(n_clusters=k, n_init=10, random_state=seed)
     lab = km.fit_predict(emb)
-    return lab, emb, silhouette_score(emb, lab), pca.explained_variance_ratio_
+    return lab, emb, silhouette_score(emb, lab), evr
 
 
 @st.cache_data
-def silhouette_curve(X: pd.DataFrame, k_min=2, k_max=8, seed=42):
-    Z = StandardScaler().fit_transform(X)
-    emb = PCA(n_components=min(6, X.shape[1]), random_state=seed).fit_transform(Z)
+def silhouette_curve(X: pd.DataFrame, method: str, n_comp: int, k_min=2, k_max=8, seed=42):
+    emb, _ = compute_embedding(X, method, n_comp, seed)
     return pd.DataFrame([
         {"k": k, "silhouette": silhouette_score(
             emb, KMeans(n_clusters=k, n_init=10, random_state=seed).fit_predict(emb))}
@@ -296,9 +332,23 @@ def pagina_clustering(df: pd.DataFrame):
     )
     X, labels = build_features(df)
 
+    # --- impostazioni algoritmo
+    st.sidebar.divider()
+    st.sidebar.subheader("⚙️ Impostazioni clustering")
+    metodi = ["MCA (consigliato per dati categorici)", "PCA (su one-hot)"] if HAS_PRINCE \
+        else ["PCA (su one-hot)"]
+    if not HAS_PRINCE:
+        st.sidebar.info("Libreria `prince` non installata: MCA non disponibile, uso PCA. "
+                        "Aggiungi `prince` a requirements.txt per abilitarla.")
+    metodo_sel = st.sidebar.radio("Riduzione dimensionale", metodi)
+    method = "MCA" if metodo_sel.startswith("MCA") else "PCA"
+    n_comp = st.sidebar.slider("Numero di componenti", 2, min(20, X.shape[1]), 12,
+                               help="Più componenti = più varianza catturata, ma anche più rumore. "
+                                    "12 è un buon compromesso per questi dati.")
+
     # --- scelta k
     st.subheader("1️⃣ Scelta del numero di cluster")
-    curve = silhouette_curve(X)
+    curve = silhouette_curve(X, method, n_comp)
     best_k = int(curve.loc[curve["silhouette"].idxmax(), "k"])
     col_a, col_b = st.columns([2, 1])
     with col_a:
@@ -312,15 +362,21 @@ def pagina_clustering(df: pd.DataFrame):
         st.caption("Il k suggerito massimizza la separazione statistica; "
                    "k più alti possono dare segmenti più azionabili.")
 
-    lab, emb, sil, evr = run_clustering(X, k)
+    lab, emb, sil, evr = run_clustering(X, k, method, n_comp)
     cluster_col = pd.Series([f"Cluster {c + 1}" for c in lab], index=df.index, name="Cluster")
     labels = labels.copy()
     labels["Cluster"] = cluster_col
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Silhouette", f"{sil:.3f}")
-    m2.metric("Varianza spiegata (PCA)", f"{evr.sum():.0%}")
-    m3.metric("Rispondenti", len(df))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Metodo", method)
+    m2.metric("Silhouette", f"{sil:.3f}")
+    var_tot = np.nansum(evr)
+    m3.metric("Varianza spiegata", f"{var_tot:.0%}" if not np.isnan(var_tot) else "n/d")
+    m4.metric("Rispondenti", len(df))
+    if method == "MCA":
+        st.caption("Nota: nella MCA la % di inerzia spiegata è tipicamente bassa per costruzione "
+                   "(correzione di Benzécri a parte) e non è confrontabile con la varianza PCA — "
+                   "non allarmarti se il numero sembra piccolo.")
 
     # --- mappa + dimensioni
     st.subheader("2️⃣ Mappa e dimensione dei cluster")
