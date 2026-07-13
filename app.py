@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, silhouette_samples
 from sklearn.preprocessing import StandardScaler
 
 try:
@@ -311,7 +311,8 @@ def run_clustering(X: pd.DataFrame, k: int, method: str, n_comp: int, seed: int 
     emb, evr = compute_embedding(X, method, n_comp, seed)
     km = KMeans(n_clusters=k, n_init=10, random_state=seed)
     lab = km.fit_predict(emb)
-    return lab, emb, silhouette_score(emb, lab), evr
+    sil_samples = silhouette_samples(emb, lab)
+    return lab, emb, silhouette_score(emb, lab), evr, sil_samples
 
 
 @st.cache_data
@@ -362,7 +363,7 @@ def pagina_clustering(df: pd.DataFrame):
         st.caption("Il k suggerito massimizza la separazione statistica; "
                    "k più alti possono dare segmenti più azionabili.")
 
-    lab, emb, sil, evr = run_clustering(X, k, method, n_comp)
+    lab, emb, sil, evr, sil_samples = run_clustering(X, k, method, n_comp)
     cluster_col = pd.Series([f"Cluster {c + 1}" for c in lab], index=df.index, name="Cluster")
     labels = labels.copy()
     labels["Cluster"] = cluster_col
@@ -377,6 +378,45 @@ def pagina_clustering(df: pd.DataFrame):
         st.caption("Nota: nella MCA la % di inerzia spiegata è tipicamente bassa per costruzione "
                    "(correzione di Benzécri a parte) e non è confrontabile con la varianza PCA — "
                    "non allarmarti se il numero sembra piccolo.")
+
+    # --- silhouette per cluster
+    st.subheader("📐 Qualità dei cluster (silhouette per cluster)")
+    sil_df = pd.DataFrame({"Cluster": cluster_col, "Silhouette": sil_samples})
+    per_cluster = (sil_df.groupby("Cluster")["Silhouette"]
+                   .agg(Media="mean", Mediana="median",
+                        Negativi=lambda s: (s < 0).mean() * 100,
+                        N="size")
+                   .reset_index())
+    col_s1, col_s2 = st.columns([3, 2])
+    with col_s1:
+        fig = px.bar(per_cluster, x="Cluster", y="Media", color="Cluster",
+                     color_discrete_sequence=PALETTE,
+                     text=per_cluster["Media"].map(lambda v: f"{v:.3f}"),
+                     title="Silhouette media per cluster")
+        fig.add_hline(y=sil, line_dash="dash", line_color="gray",
+                      annotation_text=f"media globale: {sil:.3f}")
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_layout(showlegend=False, xaxis_title=None,
+                          yaxis_title="Silhouette media", height=380)
+        st.plotly_chart(fig, use_container_width=True)
+    with col_s2:
+        tab = per_cluster.copy()
+        tab["Media"] = tab["Media"].round(3)
+        tab["Mediana"] = tab["Mediana"].round(3)
+        tab["% punti mal assegnati"] = tab.pop("Negativi").map(lambda v: f"{v:.0f}%")
+        st.dataframe(tab, use_container_width=True, hide_index=True)
+        st.caption("Silhouette > 0.25 ≈ struttura debole ma reale; > 0.5 ≈ buona. "
+                   "'% punti mal assegnati' = quota con silhouette negativa "
+                   "(più vicini a un altro cluster che al proprio).")
+    with st.expander("📊 Distribuzione della silhouette per cluster (box plot)"):
+        fig = px.box(sil_df, x="Cluster", y="Silhouette", color="Cluster",
+                     color_discrete_sequence=PALETTE,
+                     category_orders={"Cluster": sorted(sil_df["Cluster"].unique())})
+        fig.add_hline(y=0, line_dash="dot", line_color="red")
+        fig.update_layout(showlegend=False, height=380, xaxis_title=None)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("I punti sotto la linea rossa (silhouette < 0) sono rispondenti "
+                   "'di confine', più simili a un altro cluster che al proprio.")
 
     # --- mappa + dimensioni
     st.subheader("2️⃣ Mappa e dimensione dei cluster")
