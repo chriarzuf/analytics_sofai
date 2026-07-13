@@ -428,13 +428,22 @@ def pagina_clustering(df: pd.DataFrame):
     with tab_cat:
         st.caption("Distribuzione % interna a ogni cluster (cluster di dimensioni diverse "
                    "sono così confrontabili). Le etichette sono le risposte originali.")
+        ORDINI = {
+            "Livello AI": LIV_ORDER + ["Non specificato"],
+            "Fascia età": FASCE_ETA + ["Non specificato"],
+        }
         for col in CATEGORICHE:
             ct = (labels.groupby("Cluster")[col].value_counts(normalize=True)
                   .rename("Quota").reset_index())
             ct["Quota"] *= 100
+            ordine = ORDINI.get(col)
+            if ordine:
+                # mantieni solo le categorie presenti, nell'ordine naturale
+                ordine = [v for v in ordine if v in ct[col].unique()]
             fig = px.bar(ct, x="Cluster", y="Quota", color=col, barmode="group",
                          text=ct["Quota"].map(lambda v: f"{v:.0f}%"), title=col,
-                         color_discrete_sequence=px.colors.qualitative.Pastel)
+                         color_discrete_sequence=px.colors.qualitative.Pastel,
+                         category_orders={col: ordine} if ordine else None)
             fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(yaxis_title="% nel cluster", height=420)
             st.plotly_chart(fig, use_container_width=True)
