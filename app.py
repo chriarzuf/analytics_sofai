@@ -312,7 +312,7 @@ def run_clustering(X: pd.DataFrame, k: int, method: str, n_comp: int, seed: int 
     km = KMeans(n_clusters=k, n_init=10, random_state=seed)
     lab = km.fit_predict(emb)
     sil_samples = silhouette_samples(emb, lab)
-    return lab, emb, silhouette_score(emb, lab), evr, sil_samples
+    return lab, emb, silhouette_score(emb, lab), evr, sil_samples, km.cluster_centers_
 
 
 @st.cache_data
@@ -363,7 +363,7 @@ def pagina_clustering(df: pd.DataFrame):
         st.caption("Il k suggerito massimizza la separazione statistica; "
                    "k più alti possono dare segmenti più azionabili.")
 
-    lab, emb, sil, evr, sil_samples = run_clustering(X, k, method, n_comp)
+    lab, emb, sil, evr, sil_samples, centroids = run_clustering(X, k, method, n_comp)
     cluster_col = pd.Series([f"Cluster {c + 1}" for c in lab], index=df.index, name="Cluster")
     labels = labels.copy()
     labels["Cluster"] = cluster_col
@@ -446,16 +446,40 @@ def pagina_clustering(df: pd.DataFrame):
 
     # --- mappa + dimensioni
     st.subheader("2️⃣ Mappa e dimensione dei cluster")
-    plot_df = pd.DataFrame({"PC1": emb[:, 0], "PC2": emb[:, 1], "Cluster": cluster_col,
+    col_j1, col_j2 = st.columns([1, 3])
+    with col_j1:
+        usa_jitter = st.toggle("Sparpaglia punti sovrapposti (jitter)", value=True,
+                               help="Con dati categorici molti rispondenti hanno risposte identiche "
+                                    "e quindi coordinate identiche: il jitter aggiunge un piccolo "
+                                    "rumore casuale SOLO alla visualizzazione per renderli visibili. "
+                                    "Il clustering non cambia.")
+    rng = np.random.default_rng(42)
+    jit_x = rng.normal(0, 0.04 * emb[:, 0].std(), len(emb)) if usa_jitter else 0
+    jit_y = rng.normal(0, 0.04 * emb[:, 1].std(), len(emb)) if usa_jitter else 0
+    plot_df = pd.DataFrame({"PC1": emb[:, 0] + jit_x, "PC2": emb[:, 1] + jit_y,
+                            "Cluster": cluster_col,
                             "Livello": labels["Livello AI"],
                             "Occupazione": labels["Occupazione"],
                             "Fascia età": labels["Fascia età"]})
     fig = px.scatter(plot_df, x="PC1", y="PC2", color="Cluster",
                      hover_data=["Livello", "Occupazione", "Fascia età"],
-                     color_discrete_sequence=PALETTE, opacity=0.75)
+                     color_discrete_sequence=PALETTE, opacity=0.55,
+                     category_orders={"Cluster": sorted(plot_df["Cluster"].unique())})
+    # centroidi K-Means (calcolati nello spazio completo, proiettati sulle prime 2 componenti)
+    for i in range(k):
+        fig.add_scatter(x=[centroids[i, 0]], y=[centroids[i, 1]], mode="markers+text",
+                        marker=dict(symbol="x", size=18, color=PALETTE[i % len(PALETTE)],
+                                    line=dict(width=2, color="black")),
+                        text=[f"C{i + 1}"], textposition="top center",
+                        textfont=dict(size=13, color="black"),
+                        name=f"Centroide {i + 1}", showlegend=False,
+                        hovertemplate=f"Centroide Cluster {i + 1}<extra></extra>")
     fig.update_layout(height=480)
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Passa il mouse sui punti per vedere le risposte originali della persona.")
+    st.caption("Le ✕ sono i centroidi K-Means, proiettati sulle prime 2 componenti. "
+               "Nota: il clustering avviene in tutte le componenti selezionate, quindi punti "
+               "di cluster diversi possono sembrare sovrapposti in 2D pur essendo separati "
+               "nelle dimensioni non mostrate. Hover sui punti per le risposte originali.")
 
     sizes = cluster_col.value_counts().sort_index()
     fig = px.bar(x=sizes.index, y=sizes.values, color=sizes.index,
