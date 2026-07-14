@@ -203,10 +203,31 @@ def pagina_analytics(df: pd.DataFrame):
     area = df[COL_AREA].dropna().astype(str).str.strip()
     area = area[area.ne("")]
     vc_area = area.value_counts()
+    vc_altro = None
     if len(vc_area) > 10:
-        vc_area = pd.concat([vc_area.head(10), pd.Series({"Altro": vc_area.iloc[10:].sum()})])
+        vc_altro = vc_area.iloc[10:]
+        vc_area = pd.concat([vc_area.head(10), pd.Series({"Altro": vc_altro.sum()})])
     barre_con_percentuali(vc_area, f"🏢 {COL_AREA}", base_pct=area.shape[0],
                           nota_pct=f"% su {area.shape[0]} risposte. Aree meno frequenti raggruppate in 'Altro'.")
+    if vc_altro is not None:
+        with st.expander(f"🔍 Dentro 'Altro' — {len(vc_altro)} aree distinte, {vc_altro.sum()} risposte"):
+            dd = vc_altro.reset_index()
+            dd.columns = ["Area", "Conteggio"]
+            dd["% su Altro"] = (dd["Conteggio"] / vc_altro.sum() * 100).map(lambda v: f"{v:.1f}%")
+            dd["% sul totale"] = (dd["Conteggio"] / area.shape[0] * 100).map(lambda v: f"{v:.1f}%")
+            col_g, col_t = st.columns([3, 2])
+            with col_g:
+                top_altro = dd.head(15)
+                fig = px.bar(top_altro.sort_values("Conteggio"), x="Conteggio", y="Area",
+                             orientation="h", text="Conteggio",
+                             color_discrete_sequence=["#8da0cb"],
+                             title="Le 15 aree più frequenti dentro 'Altro'")
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_layout(showlegend=False, yaxis_title=None,
+                                  height=max(300, 26 * len(top_altro)))
+                st.plotly_chart(fig, use_container_width=True)
+            with col_t:
+                st.dataframe(dd, use_container_width=True, hide_index=True, height=400)
 
     st.divider()
     st.subheader(f"☁️ {COL_TOOL}")
