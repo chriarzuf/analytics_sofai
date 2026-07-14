@@ -12,6 +12,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
@@ -345,7 +346,51 @@ def pagina_clustering(df: pd.DataFrame):
     method = "MCA" if metodo_sel.startswith("MCA") else "PCA"
     n_comp = st.sidebar.slider("Numero di componenti", 2, min(20, X.shape[1]), 12,
                                help="Più componenti = più varianza catturata, ma anche più rumore. "
-                                    "12 è un buon compromesso per questi dati.")
+                                    "Usa lo scree plot qui sotto per individuare il 'gomito'.")
+
+    # --- scree plot: varianza per componente + cumulata
+    st.subheader("0️⃣ Scree plot — quante componenti tenere?")
+    _, evr_full = compute_embedding(X, method, min(20, X.shape[1]))
+    scree = pd.DataFrame({
+        "Componente": np.arange(1, len(evr_full) + 1),
+        "Varianza": np.asarray(evr_full) * 100,
+    })
+    scree["Cumulata"] = scree["Varianza"].cumsum()
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=scree["Componente"], y=scree["Varianza"], name="Varianza per componente",
+        marker_color=["#66c2a5" if c <= n_comp else "#d3d3d3" for c in scree["Componente"]],
+        text=scree["Varianza"].map(lambda v: f"{v:.1f}%"), textposition="outside",
+    ))
+    fig.add_trace(go.Scatter(
+        x=scree["Componente"], y=scree["Cumulata"], name="Cumulata",
+        mode="lines+markers", line=dict(color="#fc8d62", width=2), yaxis="y2",
+    ))
+    if method == "PCA":
+        fig.add_hline(y=70, line_dash="dot", line_color="gray", yref="y2",
+                      annotation_text="soglia indicativa 70%", annotation_position="bottom right")
+    cum_sel = scree.loc[scree["Componente"] == min(n_comp, len(scree)), "Cumulata"].iloc[0]
+    fig.add_vline(x=n_comp + 0.5, line_dash="dash", line_color="green",
+                  annotation_text=f"selezione: {n_comp} comp. → {cum_sel:.0f}%")
+    fig.update_layout(
+        height=400, margin=dict(t=40),
+        xaxis=dict(title="Componente", dtick=1),
+        yaxis=dict(title="% varianza per componente"),
+        yaxis2=dict(title="% varianza cumulata", overlaying="y", side="right",
+                    range=[0, 105], showgrid=False),
+        legend=dict(orientation="h", y=1.12),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    if method == "MCA":
+        st.caption("Le barre verdi sono le componenti incluse nella selezione corrente. "
+                   "Per la MCA l'inerzia spiegata è strutturalmente bassa: ignora le soglie "
+                   "assolute e usa il 'gomito' (il punto dove le barre smettono di calare "
+                   "rapidamente) per scegliere quante componenti tenere.")
+    else:
+        st.caption("Le barre verdi sono le componenti incluse nella selezione corrente. "
+                   "Criterio pratico: fermati al 'gomito' (dove le barre si appiattiscono) "
+                   "oppure quando la cumulata arancione raggiunge il 70-80%.")
 
     # --- scelta k
     st.subheader("1️⃣ Scelta del numero di cluster")
@@ -412,7 +457,6 @@ def pagina_clustering(df: pd.DataFrame):
     st.markdown("**Silhouette plot** — ogni rispondente è una linea orizzontale, ordinata "
                 "dal valore più alto al più basso dentro ogni cluster. Lame larghe e lunghe = "
                 "cluster coeso; lame sottili o con code negative = cluster debole.")
-    import plotly.graph_objects as go
     fig = go.Figure()
     y_pos = 0
     tick_pos, tick_lab = [], []
