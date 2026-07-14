@@ -408,15 +408,41 @@ def pagina_clustering(df: pd.DataFrame):
         st.caption("Silhouette > 0.25 ≈ struttura debole ma reale; > 0.5 ≈ buona. "
                    "'% punti mal assegnati' = quota con silhouette negativa "
                    "(più vicini a un altro cluster che al proprio).")
-    with st.expander("📊 Distribuzione della silhouette per cluster (box plot)"):
-        fig = px.box(sil_df, x="Cluster", y="Silhouette", color="Cluster",
-                     color_discrete_sequence=PALETTE,
-                     category_orders={"Cluster": sorted(sil_df["Cluster"].unique())})
-        fig.add_hline(y=0, line_dash="dot", line_color="red")
-        fig.update_layout(showlegend=False, height=380, xaxis_title=None)
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("I punti sotto la linea rossa (silhouette < 0) sono rispondenti "
-                   "'di confine', più simili a un altro cluster che al proprio.")
+    # silhouette plot classico "a coltello"
+    st.markdown("**Silhouette plot** — ogni rispondente è una linea orizzontale, ordinata "
+                "dal valore più alto al più basso dentro ogni cluster. Lame larghe e lunghe = "
+                "cluster coeso; lame sottili o con code negative = cluster debole.")
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    y_pos = 0
+    tick_pos, tick_lab = [], []
+    clusters_ordinati = sorted(sil_df["Cluster"].unique())
+    for i, cl in enumerate(clusters_ordinati):
+        vals = np.sort(sil_df.loc[sil_df["Cluster"] == cl, "Silhouette"].to_numpy())[::-1]
+        ys = np.arange(y_pos, y_pos + len(vals))
+        fig.add_trace(go.Bar(
+            x=vals, y=ys, orientation="h", name=cl,
+            marker=dict(color=PALETTE[i % len(PALETTE)], line_width=0),
+            hovertemplate=f"{cl}<br>silhouette=%{{x:.3f}}<extra></extra>",
+        ))
+        tick_pos.append(y_pos + len(vals) / 2)
+        tick_lab.append(f"{cl} (n={len(vals)})")
+        y_pos += len(vals) + 15  # spazio tra le lame
+    fig.add_vline(x=sil, line_dash="dash", line_color="red",
+                  annotation_text=f"media globale: {sil:.3f}",
+                  annotation_position="top")
+    fig.add_vline(x=0, line_color="gray", line_width=1)
+    fig.update_layout(
+        height=max(450, min(900, y_pos // 2)),
+        bargap=0, barmode="overlay", showlegend=False,
+        xaxis_title="Coefficiente di silhouette",
+        yaxis=dict(tickvals=tick_pos, ticktext=tick_lab, autorange="reversed"),
+        margin=dict(t=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("La linea rossa tratteggiata è la silhouette media globale: un buon clustering "
+               "ha tutte le lame che la superano ampiamente. Le barre a sinistra dello zero "
+               "sono rispondenti più vicini a un altro cluster che al proprio.")
 
     # --- mappa + dimensioni
     st.subheader("2️⃣ Mappa e dimensione dei cluster")
